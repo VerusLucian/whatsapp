@@ -27,6 +27,7 @@ import (
 	"go.mau.fi/util/random"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/types"
+	"maunium.net/go/mautrix/bridgev2/database"
 )
 
 type UserLoginMetadata struct {
@@ -52,6 +53,22 @@ type UserLoginMetadata struct {
 	Blocklist *types.Blocklist `json:"blocklist,omitempty"`
 
 	MData json.RawMessage `json:"mdata,omitempty"`
+}
+
+var _ database.MetaMerger = (*UserLoginMetadata)(nil)
+
+// CopyFrom replaces the login state with the metadata of a freshly completed login (e.g. re-pairing
+// the same number), while keeping settings the user configured, such as the label.
+func (m *UserLoginMetadata) CopyFrom(other any) {
+	fresh, ok := other.(*UserLoginMetadata)
+	if !ok || fresh == nil {
+		return
+	}
+	label := m.Label
+	*m = *fresh
+	if m.Label == "" {
+		m.Label = label
+	}
 }
 
 type PushKeys struct {
