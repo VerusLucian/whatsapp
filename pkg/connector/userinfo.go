@@ -187,7 +187,7 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 			log.Err(err).Stringer("jid", jid).Msg("Failed to get user info for puppet in background sync")
 			continue
 		}
-		ghost.UpdateInfo(ctx, userInfo)
+		wa.updateGhostInfo(ctx, ghost, userInfo)
 		wa.syncAltGhostWithInfo(ctx, jid, ghost)
 	}
 }
@@ -449,7 +449,7 @@ func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 			log.Err(err).Stringer("jid", jid).Msg("Failed to get contact info")
 		} else {
 			userInfo := wa.contactToUserInfo(ctx, jid, contact, "", forceAvatarSync || ghost.AvatarID == "")
-			ghost.UpdateInfo(ctx, userInfo)
+			wa.updateGhostInfo(ctx, ghost, userInfo)
 			wa.syncAltGhostWithInfo(ctx, jid, ghost)
 		}
 	}
@@ -480,7 +480,7 @@ func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JI
 			Msg("Failed to get ghost for alternate JID")
 		return
 	}
-	ghost.UpdateInfo(ctx, makeInfoFromGhost(mainGhost))
+	wa.updateGhostInfo(ctx, ghost, makeInfoFromGhost(mainGhost))
 	log.Debug().
 		Stringer("jid", jid).
 		Stringer("alternate_jid", altJID).

@@ -48,6 +48,9 @@ func (wa *WhatsAppClient) getChatInfo(ctx context.Context, portalJID types.JID, 
 		}
 	case types.GroupServer:
 		info, err := wa.Client.GetGroupInfo(ctx, portalJID)
+		if errors.Is(err, whatsmeow.ErrNotInGroup) || errors.Is(err, whatsmeow.ErrGroupNotFound) {
+			wa.forgetGroupMembership(ctx, wa.UserLogin, wa.makeWAPortalKey(portalJID))
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -130,39 +133,9 @@ func (wa *WhatsAppClient) applyChatSettings(ctx context.Context, chatID types.JI
 		userLocal.MutedUntil = info.UserLocal.MutedUntil
 	}
 	info.UserLocal = userLocal
-	if chat.Pinned {
-		info.UserLocal.Tag = ptr.Ptr(wa.Main.Config.PinnedTag)
-	} else if chat.Archived {
-		info.UserLocal.Tag = ptr.Ptr(wa.archiveTag(ctx, chatID))
+	if tag := wa.computeChatTag(ctx, chatID, chatTagState{Pinned: chat.Pinned, Archived: chat.Archived}); tag != nil {
+		info.UserLocal.Tag = tag
 	}
-}
-
-// archiveTag returns the room tag for a chat this login has archived. Group portals are shared
-// between all logins of a user, so a group only counts as archived when no other login that is
-// in it has it unarchived; otherwise the tag is cleared.
-func (wa *WhatsAppClient) archiveTag(ctx context.Context, chatJID types.JID) event.RoomTag {
-	if chatJID.Server != types.GroupServer {
-		return wa.Main.Config.ArchiveTag
-	}
-	portalKey := wa.makeWAPortalKey(chatJID)
-	for _, other := range wa.UserLogin.User.GetUserLogins() {
-		otherWA, ok := other.Client.(*WhatsAppClient)
-		if other.ID == wa.UserLogin.ID || !ok {
-			continue
-		}
-		userPortal, err := wa.Main.Bridge.DB.UserPortal.Get(ctx, other.UserLogin, portalKey)
-		if err != nil || userPortal == nil {
-			continue
-		}
-		settings, err := otherWA.GetStore().ChatSettings.GetChatSettings(ctx, chatJID)
-		if err != nil {
-			zerolog.Ctx(ctx).Warn().Err(err).Str("other_login_id", string(other.ID)).
-				Msg("Failed to get other login's chat settings for archive tag")
-		} else if !settings.Archived {
-			return ""
-		}
-	}
-	return wa.Main.Config.ArchiveTag
 }
 
 func (wa *WhatsAppClient) applyHistoryInfo(info *bridgev2.ChatInfo, conv *wadb.Conversation) {
@@ -243,22 +216,37 @@ func (wa *WhatsAppClient) wrapDMInfo(ctx context.Context, jid types.JID) *bridge
 	return info
 }
 
-// applyLoginLabel appends the login's label to a private chat's name, so chats with the same
-// contact from different WhatsApp accounts can be told apart. Unlabeled logins keep the default
-// name (and any name set from Matrix); the label command resets names when a label is cleared.
+// applyLoginLabel makes a private chat's name "<contact name> · <label>", so chats with the same
+// contact from different WhatsApp accounts can be told apart. Setting a name or avatar marks the
+// portal as having a custom name, which stops the usual ghost-to-portal sync, so the avatar is set
+// from the ghost here as well and ghost changes queue a resync (see resyncLabeledDMs).
+// Unlabeled logins keep the default ghost-derived name; the label command resets names on clear.
 func (wa *WhatsAppClient) applyLoginLabel(ctx context.Context, jid types.JID, info *bridgev2.ChatInfo) {
 	label := wa.UserLogin.Metadata.(*waid.UserLoginMetadata).Label
 	if label == "" {
 		return
 	}
-	userInfo, err := wa.getUserInfo(ctx, jid, "", false)
+	ghost, err := wa.Main.Bridge.GetGhostByID(ctx, waid.MakeUserID(jid))
 	if err != nil {
-		zerolog.Ctx(ctx).Warn().Err(err).Stringer("jid", jid).Msg("Failed to get contact name for labeled chat name")
-		return
-	} else if userInfo.Name == nil || *userInfo.Name == "" {
+		zerolog.Ctx(ctx).Warn().Err(err).Stringer("jid", jid).Msg("Failed to get ghost for labeled chat name")
 		return
 	}
-	info.Name = ptr.Ptr(*userInfo.Name + " · " + label)
+	if ghost.Name == "" {
+		// Without a contact name there is nothing to label, fall back to the default name
+		// (which also drops a previous label).
+		info.Name = bridgev2.DefaultChatName
+		return
+	}
+	info.Name = ptr.Ptr(nameWithLabel(ghost.Name, label))
+	// Like Portal.UpdateInfoFromGhost, don't touch the avatar if the ghost avatar upload failed.
+	if ghost.AvatarMXC != "" || ghost.AvatarSet || ghost.AvatarID == "" {
+		info.Avatar = &bridgev2.Avatar{
+			ID:     ghost.AvatarID,
+			MXC:    ghost.AvatarMXC,
+			Hash:   ghost.AvatarHash,
+			Remove: ghost.AvatarID == "" || ghost.AvatarMXC == "",
+		}
+	}
 }
 
 func (wa *WhatsAppClient) wrapStatusBroadcastInfo(ctx context.Context) *bridgev2.ChatInfo {

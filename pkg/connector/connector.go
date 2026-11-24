@@ -63,6 +63,8 @@ type WhatsAppConnector struct {
 	stopMediaEditCacheLoop atomic.Pointer[context.CancelFunc]
 
 	unmigratedDMs *exsync.Set[networkid.PortalKey]
+	// pendingDMResyncs holds DM portals with a queued label-related resync, to avoid resync storms.
+	pendingDMResyncs *exsync.Set[networkid.PortalKey]
 }
 
 func init() {
@@ -114,6 +116,7 @@ func (wa *WhatsAppConnector) Init(bridge *bridgev2.Bridge) {
 	)
 	wa.mediaEditCache = make(MediaEditCache)
 	wa.unmigratedDMs = exsync.NewSet[networkid.PortalKey]()
+	wa.pendingDMResyncs = exsync.NewSet[networkid.PortalKey]()
 
 	whatsmeowDBLog := bridge.Log.With().Str("db_section", "whatsmeow").Logger()
 	wa.DeviceStore = sqlstore.NewWithWrappedDB(

@@ -19,6 +19,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -112,7 +113,7 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 	case *events.Archive:
 		success = wa.handleWAArchive(ctx, evt)
 	case *events.Pin:
-		success = wa.handleWAPin(evt)
+		success = wa.handleWAPin(ctx, evt)
 
 	case *events.HistorySync:
 		wa.UserLogin.Log.Warn().Msg("Unexpected history sync event received")
@@ -811,7 +812,7 @@ func (wa *WhatsAppClient) syncGhost(jid types.JID, reason string, pictureID *str
 	if err != nil {
 		log.Err(err).Msg("Failed to get user info")
 	} else {
-		ghost.UpdateInfo(ctx, userInfo)
+		wa.updateGhostInfo(ctx, ghost, userInfo)
 		log.Debug().Msg("Synced ghost info")
 		wa.syncAltGhostWithInfo(ctx, jid, ghost)
 	}
@@ -864,12 +865,15 @@ func (wa *WhatsAppClient) handleWAGroupInfoChange(ctx context.Context, evt *even
 	if evt.Delete != nil {
 		eventMeta.Type = bridgev2.RemoteEventChatDelete
 		return wa.UserLogin.QueueRemoteEvent(&simplevent.ChatDelete{EventMeta: eventMeta}).Success
-	} else {
-		return wa.UserLogin.QueueRemoteEvent(&simplevent.ChatInfoChange{
-			EventMeta:      eventMeta,
-			ChatInfoChange: wa.wrapGroupInfoChange(ctx, evt),
-		}).Success
 	}
+	infoChange := &simplevent.ChatInfoChange{
+		EventMeta:      eventMeta,
+		ChatInfoChange: wa.wrapGroupInfoChange(ctx, evt),
+	}
+	if slices.ContainsFunc(evt.Leave, wa.IsOwnJID) {
+		return wa.UserLogin.QueueRemoteEvent(&ownLeaveInfoChange{ChatInfoChange: infoChange, wa: wa}).Success
+	}
+	return wa.UserLogin.QueueRemoteEvent(infoChange).Success
 }
 
 func (wa *WhatsAppClient) handleWAJoinedGroup(ctx context.Context, evt *events.JoinedGroup) bool {
@@ -941,23 +945,33 @@ func (wa *WhatsAppClient) handleWAMute(evt *events.Mute) bool {
 }
 
 func (wa *WhatsAppClient) handleWAArchive(ctx context.Context, evt *events.Archive) bool {
-	var tag event.RoomTag
-	if evt.Action.GetArchived() {
-		tag = wa.archiveTag(ctx, evt.JID)
+	// The other flag is read from the store, which is where the event handler is expected to have
+	// already written the new archive state of this login.
+	own, err := wa.getChatTagState(ctx, evt.JID)
+	if err != nil {
+		zerolog.Ctx(ctx).Warn().Err(err).Stringer("chat_jid", evt.JID).Msg("Failed to get chat settings for archive event")
 	}
-	return wa.handleWAUserLocalPortalInfo(evt.JID, evt.Timestamp, &bridgev2.UserLocalPortalInfo{
-		Tag: &tag,
-	})
+	own.Archived = evt.Action.GetArchived()
+	return wa.handleWATagChange(ctx, evt.JID, evt.Timestamp, own)
 }
 
-func (wa *WhatsAppClient) handleWAPin(evt *events.Pin) bool {
-	var tag event.RoomTag
-	if evt.Action.GetPinned() {
-		tag = wa.Main.Config.PinnedTag
+func (wa *WhatsAppClient) handleWAPin(ctx context.Context, evt *events.Pin) bool {
+	own, err := wa.getChatTagState(ctx, evt.JID)
+	if err != nil {
+		zerolog.Ctx(ctx).Warn().Err(err).Stringer("chat_jid", evt.JID).Msg("Failed to get chat settings for pin event")
 	}
-	return wa.handleWAUserLocalPortalInfo(evt.JID, evt.Timestamp, &bridgev2.UserLocalPortalInfo{
-		Tag: &tag,
-	})
+	own.Pinned = evt.Action.GetPinned()
+	return wa.handleWATagChange(ctx, evt.JID, evt.Timestamp, own)
+}
+
+// handleWATagChange applies an explicit pin or archive change. When the merged state of all logins
+// in the chat has neither tag, the tag is cleared, as the user just removed one of them.
+func (wa *WhatsAppClient) handleWATagChange(ctx context.Context, chatJID types.JID, ts time.Time, own chatTagState) bool {
+	tag := wa.computeChatTag(ctx, chatJID, own)
+	if tag == nil {
+		tag = ptr.Ptr(event.RoomTag(""))
+	}
+	return wa.handleWAUserLocalPortalInfo(chatJID, ts, &bridgev2.UserLocalPortalInfo{Tag: tag})
 }
 
 func (wa *WhatsAppClient) handleWAAppStateSyncComplete(ctx context.Context, evt *events.AppStateSyncComplete) {
