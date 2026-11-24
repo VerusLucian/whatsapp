@@ -812,7 +812,7 @@ func (wa *WhatsAppClient) syncGhost(jid types.JID, reason string, pictureID *str
 	if err != nil {
 		log.Err(err).Msg("Failed to get user info")
 	} else {
-		wa.updateGhostInfo(ctx, ghost, userInfo)
+		ghost.UpdateInfo(ctx, userInfo)
 		log.Debug().Msg("Synced ghost info")
 		wa.syncAltGhostWithInfo(ctx, jid, ghost)
 	}

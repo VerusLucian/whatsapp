@@ -420,6 +420,7 @@ func fnLabel(ce *commands.Event) {
 		}
 		return
 	}
+	wa := login.Client.(*WhatsAppClient)
 	oldLabel := meta.Label
 	meta.Label = label
 	if err = login.Save(ce.Ctx); err != nil {
@@ -427,12 +428,11 @@ func fnLabel(ce *commands.Event) {
 		ce.Reply("Failed to save label: %v", err)
 		return
 	}
-	userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+	portalKeys, err := wa.Main.DB.GetDMPortalKeysByReceiver(ce.Ctx, ce.Bridge.ID, login.ID)
 	if err != nil {
 		ce.Reply("Label saved, but failed to get chats to update: %v", err)
 		return
 	}
-	wa := login.Client.(*WhatsAppClient)
 	getChatInfo := wa.GetChatInfo
 	if label == "" {
 		// DM renames from Matrix are rejected, so a custom name on a DM portal is always one set by
@@ -446,10 +446,10 @@ func fnLabel(ce *commands.Event) {
 		}
 	}
 	queued := 0
-	for _, userPortal := range userPortals {
-		portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, userPortal.Portal)
+	for _, portalKey := range portalKeys {
+		portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, portalKey)
 		if err != nil {
-			ce.Log.Err(err).Object("portal_key", userPortal.Portal).Msg("Failed to get portal to apply label")
+			ce.Log.Err(err).Object("portal_key", portalKey).Msg("Failed to get portal to apply label")
 			continue
 		} else if portal == nil || portal.MXID == "" || portal.RoomType != database.RoomTypeDM {
 			continue

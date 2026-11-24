@@ -187,7 +187,7 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 			log.Err(err).Stringer("jid", jid).Msg("Failed to get user info for puppet in background sync")
 			continue
 		}
-		wa.updateGhostInfo(ctx, ghost, userInfo)
+		ghost.UpdateInfo(ctx, userInfo)
 		wa.syncAltGhostWithInfo(ctx, jid, ghost)
 	}
 }
@@ -292,6 +292,8 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 	} else if fetchAvatar {
 		ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, wa.fetchGhostAvatar)
 	}
+	// Must stay last so it sees the name and avatar after the other updaters ran.
+	ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, wa.Main.resyncLabeledDMsUpdater)
 	return ui
 }
 
@@ -449,7 +451,7 @@ func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 			log.Err(err).Stringer("jid", jid).Msg("Failed to get contact info")
 		} else {
 			userInfo := wa.contactToUserInfo(ctx, jid, contact, "", forceAvatarSync || ghost.AvatarID == "")
-			wa.updateGhostInfo(ctx, ghost, userInfo)
+			ghost.UpdateInfo(ctx, userInfo)
 			wa.syncAltGhostWithInfo(ctx, jid, ghost)
 		}
 	}
@@ -480,7 +482,7 @@ func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JI
 			Msg("Failed to get ghost for alternate JID")
 		return
 	}
-	wa.updateGhostInfo(ctx, ghost, makeInfoFromGhost(mainGhost))
+	ghost.UpdateInfo(ctx, wa.Main.makeInfoFromGhost(mainGhost))
 	log.Debug().
 		Stringer("jid", jid).
 		Stringer("alternate_jid", altJID).
@@ -488,8 +490,9 @@ func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JI
 	go wa.syncRemoteProfile(ctx, ghost)
 }
 
-func makeInfoFromGhost(ghost *bridgev2.Ghost) *bridgev2.UserInfo {
+func (wc *WhatsAppConnector) makeInfoFromGhost(ghost *bridgev2.Ghost) *bridgev2.UserInfo {
 	info := &bridgev2.UserInfo{
+		ExtraUpdates: wc.resyncLabeledDMsUpdater,
 		Identifiers:  ghost.Identifiers,
 		Name:         &ghost.Name,
 		IsBot:        &ghost.IsBot,

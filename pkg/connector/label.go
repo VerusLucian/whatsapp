@@ -82,11 +82,45 @@ func parseLabelArgs(args []string, loginIDs []networkid.UserLoginID) (*labelComm
 	return nil, fmt.Errorf("you're not logged in with +%s", phone)
 }
 
-// resyncLabeledDMs queues a chat resync for the DM portals with the ghost that belong to logins
-// with a label. Labeled DMs have a custom name and avatar, so they don't follow the ghost
-// automatically. Resyncs are deduplicated per portal until the queued one is processed.
-func (wc *WhatsAppConnector) resyncLabeledDMs(ctx context.Context, ghost *bridgev2.Ghost) {
-	portals, err := wc.Bridge.GetDMPortalsWith(ctx, ghost.ID)
+// labeledDMNeedsUpdate returns whether a labeled DM portal's name or avatar is out of date
+// compared to the ghost. It makes the ghost update hook idempotent, so it only queues a resync
+// when something really differs.
+func labeledDMNeedsUpdate(portalName string, portalAvatarID networkid.AvatarID, ghostName string, ghostAvatarID networkid.AvatarID, label string) bool {
+	if ghostName != "" && portalName != nameWithLabel(ghostName, label) {
+		return true
+	}
+	return portalAvatarID != ghostAvatarID
+}
+
+// hasLabeledLogin returns whether any loaded login has a label.
+func (wc *WhatsAppConnector) hasLabeledLogin() bool {
+	for _, login := range wc.Bridge.GetAllCachedUserLogins() {
+		if meta, ok := login.Metadata.(*waid.UserLoginMetadata); ok && meta.Label != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// resyncLabeledDMsUpdater is an ExtraUpdater for ghost info, so every ghost update path (including
+// the ones bridgev2 triggers itself) refreshes the labeled DMs with the ghost. It runs after the
+// name and avatar are applied to the ghost, inside the ghost's sync lock, so the actual work is done
+// in the background. It never reports a ghost change.
+func (wc *WhatsAppConnector) resyncLabeledDMsUpdater(ctx context.Context, ghost *bridgev2.Ghost) bool {
+	if !wc.hasLabeledLogin() {
+		return false
+	}
+	ghostID, name, avatarID := ghost.ID, ghost.Name, ghost.AvatarID
+	log := zerolog.Ctx(ctx).With().Logger()
+	go wc.resyncLabeledDMs(log.WithContext(wc.Bridge.BackgroundCtx), ghostID, name, avatarID)
+	return false
+}
+
+// resyncLabeledDMs queues a chat resync for the labeled DM portals with the ghost whose name or
+// avatar don't match the ghost anymore. Labeled DMs have a custom name and avatar, so they don't
+// follow the ghost automatically. Resyncs are deduplicated per portal until the queued one is processed.
+func (wc *WhatsAppConnector) resyncLabeledDMs(ctx context.Context, ghostID networkid.UserID, name string, avatarID networkid.AvatarID) {
+	portals, err := wc.Bridge.GetDMPortalsWith(ctx, ghostID)
 	if err != nil {
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to get DM portals to resync after ghost update")
 		return
@@ -100,7 +134,11 @@ func (wc *WhatsAppConnector) resyncLabeledDMs(ctx context.Context, ghost *bridge
 			continue
 		}
 		wa, ok := login.Client.(*WhatsAppClient)
-		if !ok || wa.UserLogin.Metadata.(*waid.UserLoginMetadata).Label == "" {
+		if !ok {
+			continue
+		}
+		label := wa.UserLogin.Metadata.(*waid.UserLoginMetadata).Label
+		if label == "" || !labeledDMNeedsUpdate(portal.Name, portal.AvatarID, name, avatarID, label) {
 			continue
 		}
 		wc.queueDMResync(wa, portal.PortalKey, "ghost update", wa.GetChatInfo)
@@ -132,15 +170,5 @@ func (wc *WhatsAppConnector) queueDMResync(
 	})
 	if !res.Success {
 		wc.pendingDMResyncs.Remove(key)
-	}
-}
-
-// updateGhostInfo updates the ghost like Ghost.UpdateInfo and, if the name or avatar changed,
-// resyncs the labeled DMs with it.
-func (wa *WhatsAppClient) updateGhostInfo(ctx context.Context, ghost *bridgev2.Ghost, info *bridgev2.UserInfo) {
-	oldName, oldAvatarID, oldAvatarMXC := ghost.Name, ghost.AvatarID, ghost.AvatarMXC
-	ghost.UpdateInfo(ctx, info)
-	if ghost.Name != oldName || ghost.AvatarID != oldAvatarID || ghost.AvatarMXC != oldAvatarMXC {
-		wa.Main.resyncLabeledDMs(ctx, ghost)
 	}
 }

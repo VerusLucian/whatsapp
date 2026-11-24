@@ -70,3 +70,25 @@ func TestNameWithLabel(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestLabeledDMNeedsUpdate(t *testing.T) {
+	tests := []struct {
+		name                     string
+		portalName, ghostName    string
+		portalAvatar, ghostAvatr networkid.AvatarID
+		want                     bool
+	}{
+		{name: "in sync", portalName: "Anna · Work", ghostName: "Anna", portalAvatar: "a", ghostAvatr: "a"},
+		{name: "renamed", portalName: "Anna · Work", ghostName: "Anna B", portalAvatar: "a", ghostAvatr: "a", want: true},
+		{name: "avatar changed", portalName: "Anna · Work", ghostName: "Anna", portalAvatar: "a", ghostAvatr: "b", want: true},
+		{name: "avatar removed", portalName: "Anna · Work", ghostName: "Anna", portalAvatar: "a", want: true},
+		{name: "no ghost name", portalName: "", ghostName: "", portalAvatar: "a", ghostAvatr: "a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := labeledDMNeedsUpdate(tt.portalName, tt.portalAvatar, tt.ghostName, tt.ghostAvatr, "Work"); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
