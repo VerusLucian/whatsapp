@@ -133,8 +133,36 @@ func (wa *WhatsAppClient) applyChatSettings(ctx context.Context, chatID types.JI
 	if chat.Pinned {
 		info.UserLocal.Tag = ptr.Ptr(wa.Main.Config.PinnedTag)
 	} else if chat.Archived {
-		info.UserLocal.Tag = ptr.Ptr(wa.Main.Config.ArchiveTag)
+		info.UserLocal.Tag = ptr.Ptr(wa.archiveTag(ctx, chatID))
 	}
+}
+
+// archiveTag returns the room tag for a chat this login has archived. Group portals are shared
+// between all logins of a user, so a group only counts as archived when no other login that is
+// in it has it unarchived; otherwise the tag is cleared.
+func (wa *WhatsAppClient) archiveTag(ctx context.Context, chatJID types.JID) event.RoomTag {
+	if chatJID.Server != types.GroupServer {
+		return wa.Main.Config.ArchiveTag
+	}
+	portalKey := wa.makeWAPortalKey(chatJID)
+	for _, other := range wa.UserLogin.User.GetUserLogins() {
+		otherWA, ok := other.Client.(*WhatsAppClient)
+		if other.ID == wa.UserLogin.ID || !ok {
+			continue
+		}
+		userPortal, err := wa.Main.Bridge.DB.UserPortal.Get(ctx, other.UserLogin, portalKey)
+		if err != nil || userPortal == nil {
+			continue
+		}
+		settings, err := otherWA.GetStore().ChatSettings.GetChatSettings(ctx, chatJID)
+		if err != nil {
+			zerolog.Ctx(ctx).Warn().Err(err).Str("other_login_id", string(other.ID)).
+				Msg("Failed to get other login's chat settings for archive tag")
+		} else if !settings.Archived {
+			return ""
+		}
+	}
+	return wa.Main.Config.ArchiveTag
 }
 
 func (wa *WhatsAppClient) applyHistoryInfo(info *bridgev2.ChatInfo, conv *wadb.Conversation) {
@@ -211,7 +239,26 @@ func (wa *WhatsAppClient) wrapDMInfo(ctx context.Context, jid types.JID) *bridge
 			"":                   {EventSender: bridgev2.EventSender{IsFromMe: true}},
 		}
 	}
+	wa.applyLoginLabel(ctx, jid, info)
 	return info
+}
+
+// applyLoginLabel appends the login's label to a private chat's name, so chats with the same
+// contact from different WhatsApp accounts can be told apart. Unlabeled logins keep the default
+// name (and any name set from Matrix); the label command resets names when a label is cleared.
+func (wa *WhatsAppClient) applyLoginLabel(ctx context.Context, jid types.JID, info *bridgev2.ChatInfo) {
+	label := wa.UserLogin.Metadata.(*waid.UserLoginMetadata).Label
+	if label == "" {
+		return
+	}
+	userInfo, err := wa.getUserInfo(ctx, jid, "", false)
+	if err != nil {
+		zerolog.Ctx(ctx).Warn().Err(err).Stringer("jid", jid).Msg("Failed to get contact name for labeled chat name")
+		return
+	} else if userInfo.Name == nil || *userInfo.Name == "" {
+		return
+	}
+	info.Name = ptr.Ptr(*userInfo.Name + " · " + label)
 }
 
 func (wa *WhatsAppClient) wrapStatusBroadcastInfo(ctx context.Context) *bridgev2.ChatInfo {

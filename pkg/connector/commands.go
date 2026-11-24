@@ -31,6 +31,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
@@ -355,5 +356,104 @@ func fnJoin(ce *commands.Event) {
 		ce.Reply("Successfully followed channel `%s`, the portal should be created momentarily", info.ID)
 	} else {
 		ce.Reply("That doesn't look like a WhatsApp invite link")
+	}
+}
+
+var cmdLabel = &commands.FullHandler{
+	Func: fnLabel,
+	Name: "label",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionAuth,
+		Description: "Show or set the label appended to the names of an account's private chats, to tell accounts apart.",
+		Args:        "[<phone number> [<label> | clear]]",
+	},
+	RequiresLogin: true,
+}
+
+func fnLabel(ce *commands.Event) {
+	logins := ce.User.GetUserLogins()
+	if len(ce.Args) == 0 {
+		lines := make([]string, 0, len(logins))
+		for _, login := range logins {
+			label := login.Metadata.(*waid.UserLoginMetadata).Label
+			if label == "" {
+				label = "(no label)"
+			}
+			lines = append(lines, fmt.Sprintf("* +%s: %s", login.ID, label))
+		}
+		ce.Reply("Usage: `$cmdprefix label <phone number> <label>` (or `clear`)\n\n%s", strings.Join(lines, "\n"))
+		return
+	}
+	phone := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, ce.Args[0])
+	idx := slices.IndexFunc(logins, func(login *bridgev2.UserLogin) bool { return string(login.ID) == phone })
+	if idx < 0 {
+		ce.Reply("You're not logged in with +%s", phone)
+		return
+	}
+	login := logins[idx]
+	meta := login.Metadata.(*waid.UserLoginMetadata)
+	if len(ce.Args) == 1 {
+		if meta.Label == "" {
+			ce.Reply("+%s has no label", login.ID)
+		} else {
+			ce.Reply("+%s is labeled `%s`", login.ID, meta.Label)
+		}
+		return
+	}
+	label := strings.Join(ce.Args[1:], " ")
+	if strings.EqualFold(label, "clear") {
+		label = ""
+	}
+	oldSuffix := " · " + meta.Label
+	meta.Label = label
+	if err := login.Save(ce.Ctx); err != nil {
+		ce.Reply("Failed to save label: %v", err)
+		return
+	}
+	portals, err := ce.Bridge.GetAllPortalsWithMXID(ce.Ctx)
+	if err != nil {
+		ce.Reply("Label saved, but failed to get chats to rename: %v", err)
+		return
+	}
+	wa := login.Client.(*WhatsAppClient)
+	getChatInfo := wa.GetChatInfo
+	if label == "" {
+		// Only names this command labeled go back to the default; names set from Matrix stay.
+		getChatInfo = func(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+			info, err := wa.GetChatInfo(ctx, portal)
+			if err == nil {
+				info.Name = bridgev2.DefaultChatName
+			}
+			return info, err
+		}
+	}
+	renamed := 0
+	for _, portal := range portals {
+		if portal.Receiver != login.ID || portal.RoomType != database.RoomTypeDM {
+			continue
+		} else if label == "" && !strings.HasSuffix(portal.Name, oldSuffix) {
+			continue
+		}
+		login.QueueRemoteEvent(&simplevent.ChatResync{
+			EventMeta: simplevent.EventMeta{
+				Type:      bridgev2.RemoteEventChatResync,
+				PortalKey: portal.PortalKey,
+				LogContext: func(c zerolog.Context) zerolog.Context {
+					return c.Stringer("triggered_by_user", ce.User.MXID)
+				},
+			},
+			GetChatInfoFunc: getChatInfo,
+		})
+		renamed++
+	}
+	if label == "" {
+		ce.Reply("Removed the label of +%s, renaming %d private chats", login.ID, renamed)
+	} else {
+		ce.Reply("Labeled +%s as `%s`, renaming %d private chats", login.ID, label, renamed)
 	}
 }

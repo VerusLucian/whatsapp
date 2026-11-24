@@ -110,7 +110,7 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 	case *events.Mute:
 		success = wa.handleWAMute(evt)
 	case *events.Archive:
-		success = wa.handleWAArchive(evt)
+		success = wa.handleWAArchive(ctx, evt)
 	case *events.Pin:
 		success = wa.handleWAPin(evt)
 
@@ -940,10 +940,10 @@ func (wa *WhatsAppClient) handleWAMute(evt *events.Mute) bool {
 	})
 }
 
-func (wa *WhatsAppClient) handleWAArchive(evt *events.Archive) bool {
+func (wa *WhatsAppClient) handleWAArchive(ctx context.Context, evt *events.Archive) bool {
 	var tag event.RoomTag
 	if evt.Action.GetArchived() {
-		tag = wa.Main.Config.ArchiveTag
+		tag = wa.archiveTag(ctx, evt.JID)
 	}
 	return wa.handleWAUserLocalPortalInfo(evt.JID, evt.Timestamp, &bridgev2.UserLocalPortalInfo{
 		Tag: &tag,

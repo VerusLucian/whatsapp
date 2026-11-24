@@ -38,6 +38,8 @@ type UserLoginMetadata struct {
 	APNSEncPubKey   []byte        `json:"apns_enc_pubkey,omitempty"`
 	APNSEncPrivKey  []byte        `json:"apns_enc_privkey,omitempty"`
 	LoggedInAt      jsontime.Unix `json:"logged_in_at,omitzero"`
+	// Label is appended to the names of this login's private chats (set with the label command).
+	Label string `json:"label,omitempty"`
 
 	AppStateRecoveryAttempted map[appstate.WAPatchName]time.Time `json:"app_state_recovery_attempted,omitempty"`
 	WASAResynced              bool                               `json:"wasa_resynced,omitzero"`
