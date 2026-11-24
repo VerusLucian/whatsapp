@@ -952,7 +952,7 @@ func (wa *WhatsAppClient) handleWAArchive(ctx context.Context, evt *events.Archi
 		zerolog.Ctx(ctx).Warn().Err(err).Stringer("chat_jid", evt.JID).Msg("Failed to get chat settings for archive event")
 	}
 	own.Archived = evt.Action.GetArchived()
-	return wa.handleWATagChange(ctx, evt.JID, evt.Timestamp, own)
+	return wa.handleWATagChange(ctx, evt.JID, evt.Timestamp, own, wa.Main.Config.ArchiveTag)
 }
 
 func (wa *WhatsAppClient) handleWAPin(ctx context.Context, evt *events.Pin) bool {
@@ -961,17 +961,28 @@ func (wa *WhatsAppClient) handleWAPin(ctx context.Context, evt *events.Pin) bool
 		zerolog.Ctx(ctx).Warn().Err(err).Stringer("chat_jid", evt.JID).Msg("Failed to get chat settings for pin event")
 	}
 	own.Pinned = evt.Action.GetPinned()
-	return wa.handleWATagChange(ctx, evt.JID, evt.Timestamp, own)
+	return wa.handleWATagChange(ctx, evt.JID, evt.Timestamp, own, wa.Main.Config.PinnedTag)
 }
 
-// handleWATagChange applies an explicit pin or archive change. When the merged state of all logins
-// in the chat has neither tag, the tag is cleared, as the user just removed one of them.
-func (wa *WhatsAppClient) handleWATagChange(ctx context.Context, chatJID types.JID, ts time.Time, own chatTagState) bool {
+// handleWATagChange applies an explicit pin or archive change. If the merged state of all logins in
+// the chat has a tag, it is set. Otherwise only the tag this event is about (changedTag) is removed
+// from the room, because clearing via an empty tag would also strip tags the user set manually.
+func (wa *WhatsAppClient) handleWATagChange(ctx context.Context, chatJID types.JID, ts time.Time, own chatTagState, changedTag event.RoomTag) bool {
 	tag := wa.computeChatTag(ctx, chatJID, own)
-	if tag == nil {
-		tag = ptr.Ptr(event.RoomTag(""))
+	if tag != nil {
+		return wa.handleWAUserLocalPortalInfo(chatJID, ts, &bridgev2.UserLocalPortalInfo{Tag: tag})
 	}
-	return wa.handleWAUserLocalPortalInfo(chatJID, ts, &bridgev2.UserLocalPortalInfo{Tag: tag})
+	return wa.UserLogin.QueueRemoteEvent(&removeTagInfoChange{
+		ChatInfoChange: &simplevent.ChatInfoChange{
+			EventMeta: simplevent.EventMeta{
+				Type:      bridgev2.RemoteEventChatInfoChange,
+				PortalKey: wa.makeWAPortalKey(chatJID),
+				Timestamp: ts,
+			},
+		},
+		wa:  wa,
+		tag: changedTag,
+	}).Success
 }
 
 func (wa *WhatsAppClient) handleWAAppStateSyncComplete(ctx context.Context, evt *events.AppStateSyncComplete) {

@@ -55,3 +55,29 @@ func TestOtherStateMatters(t *testing.T) {
 }
 
 func ptrTo(tag event.RoomTag) *event.RoomTag { return &tag }
+
+func TestShouldRemoveTag(t *testing.T) {
+	only := []event.RoomTag{event.RoomTagLowPriority}
+	tests := []struct {
+		name       string
+		tag        event.RoomTag
+		only       []event.RoomTag
+		onlyCreate bool
+		has        bool
+		want       bool
+	}{
+		{name: "managed and present", tag: event.RoomTagLowPriority, only: only, has: true, want: true},
+		{name: "room lacks tag", tag: event.RoomTagLowPriority, only: only},
+		{name: "tag not bridged", tag: event.RoomTagFavourite, only: only, has: true},
+		{name: "tagging disabled", tag: event.RoomTagLowPriority, has: true},
+		{name: "only on create", tag: event.RoomTagLowPriority, only: only, onlyCreate: true, has: true},
+		{name: "empty tag", only: only, has: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRemoveTag(tt.tag, tt.only, tt.onlyCreate, tt.has); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -3,11 +3,13 @@ package connector
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/matrix"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/event"
@@ -141,4 +143,50 @@ type ownLeaveInfoChange struct {
 func (evt *ownLeaveInfoChange) GetChatInfoChange(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfoChange, error) {
 	evt.wa.forgetGroupMembership(ctx, evt.wa.UserLogin, evt.PortalKey)
 	return evt.ChatInfoChange.GetChatInfoChange(ctx, portal)
+}
+
+// shouldRemoveTag decides whether the bridge removes a tag from a room after an explicit unpin or
+// unarchive. This mirrors the conditions under which bridgev2 would manage the tag at all (a
+// non-empty only_bridge_tags containing it, and tag_only_on_create disabled), and only touches
+// rooms that actually have the tag.
+func shouldRemoveTag(tag event.RoomTag, onlyBridgeTags []event.RoomTag, tagOnlyOnCreate, roomHasTag bool) bool {
+	return roomHasTag && !tagOnlyOnCreate && tag != "" && slices.Contains(onlyBridgeTags, tag)
+}
+
+// removeTagInfoChange removes a single tag from the room of the user's double puppet when handled.
+// bridgev2's TagRoom can't be used for this: it removes both m.favourite and m.lowpriority.
+type removeTagInfoChange struct {
+	*simplevent.ChatInfoChange
+	wa  *WhatsAppClient
+	tag event.RoomTag
+}
+
+func (evt *removeTagInfoChange) GetChatInfoChange(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfoChange, error) {
+	log := zerolog.Ctx(ctx).With().Str("tag", string(evt.tag)).Logger()
+	bridgeConfig := evt.wa.Main.Bridge.Config
+	if portal.MXID == "" || !shouldRemoveTag(evt.tag, bridgeConfig.OnlyBridgeTags, bridgeConfig.TagOnlyOnCreate, true) {
+		return nil, nil
+	}
+	intent, ok := evt.wa.UserLogin.User.DoublePuppet(ctx).(*matrix.ASIntent)
+	if !ok {
+		// No double puppet (or a different Matrix connector), so there's no way to change the user's tags.
+		return nil, nil
+	}
+	tags, err := intent.Matrix().GetTags(ctx, portal.MXID)
+	if err != nil {
+		log.Err(err).Msg("Failed to get room tags to remove tag")
+		return nil, nil
+	}
+	if !shouldRemoveTag(evt.tag, bridgeConfig.OnlyBridgeTags, bridgeConfig.TagOnlyOnCreate, hasRoomTag(tags, evt.tag)) {
+		return nil, nil
+	}
+	if err = intent.Matrix().RemoveTag(ctx, portal.MXID, evt.tag); err != nil {
+		log.Err(err).Msg("Failed to remove room tag")
+	}
+	return nil, nil
+}
+
+func hasRoomTag(tags event.TagEventContent, tag event.RoomTag) bool {
+	_, ok := tags.Tags[tag]
+	return ok
 }
