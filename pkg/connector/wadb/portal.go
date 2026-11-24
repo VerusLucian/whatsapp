@@ -9,7 +9,7 @@ import (
 
 const getDMPortalKeysByReceiverQuery = `
 	SELECT id, receiver FROM portal
-	WHERE bridge_id=$1 AND receiver=$2 AND room_type='dm' AND mxid IS NOT NULL
+	WHERE bridge_id=$1 AND receiver=$2 AND room_type='dm' AND mxid IS NOT NULL AND mxid<>''
 `
 
 func scanPortalKey(row dbutil.Scannable) (key networkid.PortalKey, err error) {
